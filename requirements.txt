@@ -1,0 +1,12 @@
+# GenCast Mini — pinned dependencies for a standalone GPU-server run.
+# Install jax GPU support separately first (CUDA build depends on the box):
+#   pip install -U "jax[cuda12]"
+# Then install the model code, pinned to a known-working commit:
+#   pip install "git+https://github.com/google-deepmind/weathernext.git@08cf73625c9d12bd9aaa038868bcb2fe488f2a22"
+# Then the rest:
+xarray
+netCDF4
+h5netcdf
+matplotlib
+numpy
+dm-haiku
