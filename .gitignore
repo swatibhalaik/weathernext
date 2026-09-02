@@ -1,0 +1,4 @@
+gencast-env/
+gencast_data/
+gencast_output/*.nc
+predictions_nc_*.part
