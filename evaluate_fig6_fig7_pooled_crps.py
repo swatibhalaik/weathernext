@@ -269,6 +269,25 @@ def main() -> None:
         writer.writerows(rows)
     log.info("Wrote %s (%d rows)", csv_path, len(rows))
 
+    # Colorbar scale: DATA-DRIVEN, not borrowed from the paper's own Figs.6/7
+    # (which use a fixed +/-30% because ENS is a strong baseline, so
+    # GenCast-vs-ENS skill differences are modest). Our persistence baseline
+    # is much weaker, so GenCast Mini routinely posts 50-90% skill gains --
+    # at a fixed +/-30% scale, ~99% of cells here saturate to solid color and
+    # every real pattern (e.g. where humidity forecasts struggle) is hidden.
+    # Using the 99th percentile of |skill| (rounded up, clamped to [20,100])
+    # keeps the small number of pathological outliers (near-zero-persistence-
+    # CRPS blowups) from compressing the whole scale to uselessness, while
+    # still clipping (not hiding) them at the extreme color.
+    finite_skills = np.array([r[8] for r in rows if np.isfinite(r[8])])
+    if finite_skills.size:
+        raw_vmax = float(np.percentile(np.abs(finite_skills), 99))
+        vmax = float(np.clip(np.ceil(raw_vmax / 10.0) * 10.0, 20.0, 100.0))
+    else:
+        raw_vmax, vmax = float("nan"), 30.0
+    log.info("Scorecard colorbar: +/-%.0f%% (99th percentile of |skill| = %.1f%%), "
+             "not the paper's fixed +/-30%% ENS-relative scale", vmax, raw_vmax)
+
     # Composite figure per pooling mode, mimicking the paper's panel layout:
     # rows = 4 atmospheric families (level x lead-time heatmap) + 4 surface rows
     # (single-row heatmap), columns = 5 spatial scales.
@@ -276,7 +295,7 @@ def main() -> None:
                                         ("max", "Max-pooled (cf. Extended Data Fig. 7)", "scorecard_maxpool.png")):
         fig, axes = plt.subplots(len(ATMOS_FAMILIES) + len(SURFACE_ROWS), len(SCALES),
                                   figsize=(3.2 * len(SCALES), 2.2 * (len(ATMOS_FAMILIES) + len(SURFACE_ROWS))))
-        vmax = 30.0
+        im = None
         for ri, family in enumerate(ATMOS_FAMILIES):
             for ci, (scale_km, block) in enumerate(SCALES):
                 sub = [r for r in rows if r[0] == family and r[2] == scale_km and r[4] == mode]
@@ -314,10 +333,14 @@ def main() -> None:
         fig.suptitle(
             f"GenCast Mini pooled-CRPS scorecard -- {mode_label}\n"
             "% better than PERSISTENCE (not ENS -- unavailable in this reproduction). "
+            f"Colorbar scaled to data (+/-{vmax:.0f}%), not the paper's +/-30% ENS-relative "
+            "scale -- persistence is a much weaker baseline so skill differences run larger.\n"
             "1-degree grid; scales are approximate block sizes, not exact km windows.",
-            fontsize=10,
+            fontsize=9,
         )
-        fig.tight_layout(rect=[0, 0, 1, 0.93])
+        fig.tight_layout(rect=[0, 0, 0.90, 0.91])
+        cbar = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.02, pad=0.03)
+        cbar.set_label("% GenCast Mini better than persistence")
         out = args.output_dir / fig_name
         fig.savefig(out, dpi=150, bbox_inches="tight")
         plt.close(fig)
