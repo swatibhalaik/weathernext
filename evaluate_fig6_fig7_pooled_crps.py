@@ -201,6 +201,33 @@ def main() -> None:
             return "10m_u_component_of_wind"
         return VAR_MAP[family]
 
+    n_input_frames = eval_inputs.sizes["time"]
+
+    def get_persistence_field(family, level):
+        """Persistence baseline = the last available input-time frame, held
+        constant.
+
+        total_precipitation_12hr is a TARGET-ONLY variable in GenCast's task
+        config: accumulated precipitation is not fed back to the model as an
+        autoregressive input (unlike geopotential/temperature/wind), so
+        data_utils.extract_inputs_targets_forcings correctly omits it from
+        eval_inputs -- even though the raw source dataset (example_batch)
+        does contain it at every time step, including the input window. So
+        for that one family we fall back to reading it directly from
+        example_batch at the same raw time index eval_inputs' last input
+        frame corresponds to (index n_input_frames - 1), instead of from
+        eval_inputs. This is a data-plumbing workaround for a real GenCast
+        modeling fact (precip is target-only), not a change in what
+        "persistence" means -- it's still "hold the last known frame before
+        the forecast constant"; it's just read from the un-split raw dataset
+        because that's the only place this particular variable's pre-forecast
+        value survives.
+        """
+        required_var = required_var_for(family)
+        if required_var in eval_inputs:
+            return get_family_field(eval_inputs, family, level, -1)
+        return get_family_field(example_batch, family, level, n_input_frames - 1)
+
     families_and_levels = [(fam, lvl) for fam in ATMOS_FAMILIES for lvl in PRESSURE_LEVELS]
     families_and_levels += [(fam, None) for fam in SURFACE_ROWS]
 
@@ -218,7 +245,7 @@ def main() -> None:
                 for t in range(n_times):
                     tgt_field = get_family_field(eval_targets, family, level, t)
                     pred_field = get_family_field(predictions, family, level, t)
-                    pers_field = get_family_field(eval_inputs, family, level, -1)
+                    pers_field = get_persistence_field(family, level)
 
                     tgt_pooled = block_pool(tgt_field, block, mode)
                     pred_pooled = block_pool(pred_field, block, mode)  # (sample, lat_p, lon_p)
