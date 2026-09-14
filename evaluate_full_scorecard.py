@@ -124,6 +124,7 @@ def main() -> None:
 
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.colors
     import matplotlib.pyplot as plt
     import xarray
 
@@ -197,7 +198,112 @@ def main() -> None:
         writer.writerows(scorecard_rows)
     log.info("Wrote %s (%d rows)", csv_path, len(scorecard_rows))
 
+    # ---- Composite scorecard: ONE figure, laid out exactly like the paper's own
+    # Extended Data Fig. 1 (surface strip + u/v wind on the left, temperature/
+    # geopotential/specific humidity on the right, one SHARED colorbar), so this
+    # is visually comparable to the paper panel-for-panel rather than six
+    # separately-scaled images that can't be compared to each other at a glance.
+    #
+    # Colorbar: SEQUENTIAL, not diverging. The paper uses a +/-20% diverging
+    # scale because its GenCast-vs-ENS comparison genuinely has both signs in
+    # meaningful quantity. Our GenCast-vs-persistence skill here is ENTIRELY
+    # positive (persistence is a much weaker baseline) -- checked directly
+    # against this run's own data (min/max over all 2,070 rows), not assumed.
+    # A symmetric +/-X% diverging scale on all-positive data wastes its whole
+    # negative half and compresses the real 5-92% spread into a fraction of
+    # the remaining half, which is why the six separate per-family panels
+    # read as "solid color, can't see any difference." A single-hue sequential
+    # map spanning the actual data range gives that spread the full color
+    # range instead.
+    all_skill = np.array([r[5] for r in scorecard_rows if np.isfinite(r[5])])
+    if all_skill.size:
+        shared_vmin = float(np.floor(all_skill.min() / 5.0) * 5.0)
+        shared_vmax = float(np.ceil(all_skill.max() / 5.0) * 5.0)
+    else:
+        shared_vmin, shared_vmax = 0.0, 20.0
+    composite_cmap = matplotlib.colormaps["Blues"].copy()
+    composite_cmap.set_under("#b2182b")  # in case a future re-run does have a genuine negative cell
+    composite_norm = matplotlib.colors.Normalize(vmin=shared_vmin, vmax=shared_vmax)
+    log.info("Composite scorecard shared colorbar: sequential %.0f%%-%.0f%% "
+             "(this run's own min/max skill, all positive -- not a +/-X%% diverging scale)",
+             shared_vmin, shared_vmax)
+
+    def _surface_grid():
+        labels = [lbl for lbl, _ in TIER1_SURFACE_VARS]
+        g = np.full((len(labels), n_times), np.nan)
+        for fam, level, ld, rg, rp, skill in scorecard_rows:
+            if fam in labels:
+                g[labels.index(fam), int(round(ld / 0.5))] = skill
+        return g, labels
+
+    def _atmos_grid(fam_name):
+        g = np.full((len(PRESSURE_LEVELS), n_times), np.nan)
+        for fam, level, ld, rg, rp, skill in scorecard_rows:
+            if fam == fam_name and level is not None:
+                g[PRESSURE_LEVELS.index(level), int(round(ld / 0.5))] = skill
+        return g
+
+    SURFACE_DISPLAY_NAMES = {"2t": "2m temperature", "msl": "mean sea level pressure",
+                              "10u": "10m u wind", "10v": "10m v wind"}
+    fig = plt.figure(figsize=(11, 8.5))
+    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.25, left=0.11, right=0.87, top=0.90, bottom=0.08)
+    xticks = [t for t in (1, 3, 5, 7, 10, 15) if t <= lead_days[-1]]
+    panel_axes = []
+    im = None
+
+    ax_surf = fig.add_subplot(gs[0, 0])
+    grid, labels = _surface_grid()
+    im = ax_surf.imshow(grid, aspect="auto", cmap=composite_cmap, norm=composite_norm,
+                         extent=[0, lead_days[-1], len(labels) - 0.5, -0.5], interpolation="nearest")
+    ax_surf.set_yticks(range(len(labels)))
+    ax_surf.set_yticklabels([SURFACE_DISPLAY_NAMES.get(l, l) for l in labels], fontsize=8)
+    ax_surf.set_xticks(xticks)
+    ax_surf.tick_params(labelbottom=False)
+    panel_axes.append(ax_surf)
+
+    left_families = [("u_component_of_wind", "u component of wind"), ("v_component_of_wind", "v component of wind")]
+    right_families = [("temperature", "temperature"), ("geopotential", "geopotential"), ("specific_humidity", "specific humidity")]
+    for i, (fam, title) in enumerate(left_families):
+        ax = fig.add_subplot(gs[i + 1, 0])
+        ax.imshow(_atmos_grid(fam), aspect="auto", cmap=composite_cmap, norm=composite_norm,
+                  extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5], interpolation="nearest")
+        ax.set_yticks(range(len(PRESSURE_LEVELS))); ax.set_yticklabels(PRESSURE_LEVELS, fontsize=8)
+        ax.set_ylabel("Pressure (hPa)", fontsize=9)
+        ax.set_title(title, fontsize=9)
+        ax.set_xticks(xticks)
+        if i == len(left_families) - 1:
+            ax.set_xlabel("Lead time (days)", fontsize=9)
+        else:
+            ax.tick_params(labelbottom=False)
+        panel_axes.append(ax)
+    for i, (fam, title) in enumerate(right_families):
+        ax = fig.add_subplot(gs[i, 1])
+        ax.imshow(_atmos_grid(fam), aspect="auto", cmap=composite_cmap, norm=composite_norm,
+                  extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5], interpolation="nearest")
+        ax.set_yticks(range(len(PRESSURE_LEVELS))); ax.set_yticklabels(PRESSURE_LEVELS, fontsize=8)
+        ax.set_ylabel("Pressure (hPa)", fontsize=9)
+        ax.set_title(title, fontsize=9)
+        ax.set_xticks(xticks)
+        if i == len(right_families) - 1:
+            ax.set_xlabel("Lead time (days)", fontsize=9)
+        else:
+            ax.tick_params(labelbottom=False)
+        panel_axes.append(ax)
+
+    fig.suptitle("GenCast Mini vs PERSISTENCE RMSE scorecard (not ENS -- unavailable in this reproduction)\n"
+                 f"Sequential colorbar {shared_vmin:.0f}%-{shared_vmax:.0f}% (this run's actual skill range, all positive), "
+                 "shared across every panel",
+                 fontsize=11)
+    cbar = fig.colorbar(im, ax=panel_axes, fraction=0.035, pad=0.03, extend="min")
+    cbar.set_label("% GenCast Mini better than persistence")
+    out = args.output_dir / "scorecard_composite.png"
+    fig.savefig(out, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    log.info("Wrote %s", out)
+
     # Heatmaps: one per atmospheric family, pressure level (y) x lead time (x) -> skill %
+    # (kept alongside the composite above for anyone who wants a larger, single-
+    # variable, independently-scaled zoom on one family)
     for label, _ in TIER1_ATMOSPHERIC_FAMILIES:
         rows = [r for r in scorecard_rows if r[0] == label and r[1] is not None]
         grid = np.full((len(PRESSURE_LEVELS), n_times), np.nan)
@@ -205,20 +311,31 @@ def main() -> None:
             li = PRESSURE_LEVELS.index(level)
             ti = int(round(ld / 0.5))
             grid[li, ti] = skill
-        vmax = np.nanmax(np.abs(grid)) if np.isfinite(grid).any() else 1.0
+        finite_grid = grid[np.isfinite(grid)]
+        if finite_grid.size:
+            panel_vmin = float(np.floor(np.percentile(finite_grid, 2) / 5.0) * 5.0)
+            panel_vmax = float(np.ceil(np.percentile(finite_grid, 98) / 5.0) * 5.0)
+            if panel_vmax <= panel_vmin:
+                panel_vmax = panel_vmin + 5.0
+        else:
+            panel_vmin, panel_vmax = 0.0, 100.0
+        panel_cmap = matplotlib.colormaps["Blues"].copy()
+        panel_cmap.set_under("#b2182b")
+        panel_cmap.set_over("#08306b")
+        panel_norm = matplotlib.colors.Normalize(vmin=panel_vmin, vmax=panel_vmax)
         fig, ax = plt.subplots(figsize=(9, 4.5))
-        im = ax.imshow(grid, aspect="auto", cmap="RdBu", vmin=-vmax, vmax=vmax,
-                        extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5])
+        im = ax.imshow(grid, aspect="auto", cmap=panel_cmap, norm=panel_norm,
+                        extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5], interpolation="nearest")
         ax.set_yticks(range(len(PRESSURE_LEVELS)))
         ax.set_yticklabels(PRESSURE_LEVELS)
         ax.set_ylabel("Pressure (hPa)")
         ax.set_xlabel("Lead time (days)")
         ax.set_title(f"{label} -- % GenCast Mini better than PERSISTENCE (not ENS)")
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label("% better than persistence")
+        cbar = fig.colorbar(im, ax=ax, extend="both")
+        cbar.set_label("% better than persistence (sequential scale, not paper's diverging ENS scale)")
         fig.tight_layout()
         out = args.output_dir / f"scorecard_{label}.png"
-        fig.savefig(out, dpi=150, bbox_inches="tight")
+        fig.savefig(out, dpi=200, bbox_inches="tight")
         plt.close(fig)
         log.info("Wrote %s", out)
 
@@ -236,7 +353,7 @@ def main() -> None:
     ax.legend()
     fig.tight_layout()
     out = args.output_dir / "scorecard_surface.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info("Wrote %s", out)
 
@@ -281,7 +398,7 @@ def main() -> None:
         axes[1].set_xlabel("Lead time (days)")
         fig.suptitle(f"GenCast Mini -- not in paper's Fig.1/Fig.8 headline figures ({n_members}-member ensemble)")
         fig.tight_layout()
-        fig.savefig(args.output_dir / f"extra_{label}.png", dpi=150, bbox_inches="tight")
+        fig.savefig(args.output_dir / f"extra_{label}.png", dpi=200, bbox_inches="tight")
         plt.close(fig)
         tier2_summary.append((label, None, rows[0][1], rows[-1][1], rows[0][2], rows[-1][2]))
 
@@ -298,7 +415,7 @@ def main() -> None:
             tier2_summary.append((f"{label}@{lvl}hPa", lvl, rows[0][1], rows[-1][1], rows[0][2], rows[-1][2]))
         fig, ax = plt.subplots(figsize=(9, 4.5))
         im = ax.imshow(grid_rmse, aspect="auto", cmap="viridis",
-                        extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5])
+                        extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5], interpolation="nearest")
         ax.set_yticks(range(len(PRESSURE_LEVELS)))
         ax.set_yticklabels(PRESSURE_LEVELS)
         ax.set_ylabel("Pressure (hPa)")
@@ -306,7 +423,7 @@ def main() -> None:
         ax.set_title(f"{label} -- RMSE (no paper baseline available for this variable)")
         fig.colorbar(im, ax=ax, label="RMSE (native units)")
         fig.tight_layout()
-        fig.savefig(args.output_dir / f"extra_{label}_rmse_by_level.png", dpi=150, bbox_inches="tight")
+        fig.savefig(args.output_dir / f"extra_{label}_rmse_by_level.png", dpi=200, bbox_inches="tight")
         plt.close(fig)
 
     summary_path = args.output_dir / "tier2_summary.csv"

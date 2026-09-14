@@ -135,6 +135,7 @@ def main() -> None:
 
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.colors
     import matplotlib.pyplot as plt
     import xarray
 
@@ -269,24 +270,32 @@ def main() -> None:
         writer.writerows(rows)
     log.info("Wrote %s (%d rows)", csv_path, len(rows))
 
-    # Colorbar scale: DATA-DRIVEN, not borrowed from the paper's own Figs.6/7
-    # (which use a fixed +/-30% because ENS is a strong baseline, so
-    # GenCast-vs-ENS skill differences are modest). Our persistence baseline
-    # is much weaker, so GenCast Mini routinely posts 50-90% skill gains --
-    # at a fixed +/-30% scale, ~99% of cells here saturate to solid color and
-    # every real pattern (e.g. where humidity forecasts struggle) is hidden.
-    # Using the 99th percentile of |skill| (rounded up, clamped to [20,100])
-    # keeps the small number of pathological outliers (near-zero-persistence-
-    # CRPS blowups) from compressing the whole scale to uselessness, while
-    # still clipping (not hiding) them at the extreme color.
+    # Colorbar: SEQUENTIAL, not diverging -- a second fix beyond the earlier
+    # data-driven vmax. A symmetric red-blue scale around 0% assumes roughly
+    # equal amounts of "better" and "worse" data; here, ~99% of cells are
+    # positive (persistence is a weak baseline), so a +/-X% diverging scale
+    # spends its entire red half on almost nothing and compresses the actual,
+    # informative 40-95% spread into a narrow slice of the blue half --
+    # exactly why it read as "solid color, can't see any difference." Using a
+    # single-hue sequential map (Blues) spanning where the data actually lives
+    # (2nd-97th percentile) gives that real spread the FULL color range, so
+    # scale-to-scale and lead-time structure is actually visible. The rare
+    # genuine negative cells (persistence actually wins, e.g. near-surface
+    # humidity at large pooling scales) are not hidden -- they're clipped to a
+    # bold, unambiguous red via cmap.set_under(), with the colorbar's "extend"
+    # arrow marking that clipping explicitly rather than silently.
     finite_skills = np.array([r[8] for r in rows if np.isfinite(r[8])])
     if finite_skills.size:
-        raw_vmax = float(np.percentile(np.abs(finite_skills), 99))
-        vmax = float(np.clip(np.ceil(raw_vmax / 10.0) * 10.0, 20.0, 100.0))
+        vmin = float(np.floor(np.percentile(finite_skills, 2) / 5.0) * 5.0)
+        vmax = float(np.ceil(np.percentile(finite_skills, 97) / 5.0) * 5.0)
     else:
-        raw_vmax, vmax = float("nan"), 30.0
-    log.info("Scorecard colorbar: +/-%.0f%% (99th percentile of |skill| = %.1f%%), "
-             "not the paper's fixed +/-30%% ENS-relative scale", vmax, raw_vmax)
+        vmin, vmax = 0.0, 100.0
+    cmap = matplotlib.colormaps["Blues"].copy()
+    cmap.set_under("#b2182b")
+    cmap.set_over("#08306b")
+    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+    log.info("Scorecard colorbar: sequential %.0f%%-%.0f%% (2nd-97th percentile of skill), "
+             "not a +/-X%% diverging scale -- ~99%% of the data is positive here", vmin, vmax)
 
     # Composite figure per pooling mode, mimicking the paper's panel layout:
     # rows = 4 atmospheric families (level x lead-time heatmap) + 4 surface rows
@@ -305,8 +314,8 @@ def main() -> None:
                     ti = int(round(ld / 0.5)) - 1
                     grid[li, ti] = sk
                 ax = axes[ri][ci]
-                im = ax.imshow(grid, aspect="auto", cmap="RdBu", vmin=-vmax, vmax=vmax,
-                                extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5])
+                im = ax.imshow(grid, aspect="auto", cmap=cmap, norm=norm,
+                                extent=[0, lead_days[-1], len(PRESSURE_LEVELS) - 0.5, -0.5], interpolation="nearest")
                 if ri == 0:
                     ax.set_title(f"{scale_km} km")
                 if ci == 0:
@@ -323,8 +332,8 @@ def main() -> None:
                     ti = int(round(ld / 0.5)) - 1
                     vec[0, ti] = sk
                 ax = axes[ri][ci]
-                ax.imshow(vec, aspect="auto", cmap="RdBu", vmin=-vmax, vmax=vmax,
-                           extent=[0, lead_days[-1], 0.5, -0.5])
+                ax.imshow(vec, aspect="auto", cmap=cmap, norm=norm,
+                           extent=[0, lead_days[-1], 0.5, -0.5], interpolation="nearest")
                 ax.set_yticks([])
                 if ci == 0:
                     ax.set_ylabel(srow)
@@ -333,16 +342,16 @@ def main() -> None:
         fig.suptitle(
             f"GenCast Mini pooled-CRPS scorecard -- {mode_label}\n"
             "% better than PERSISTENCE (not ENS -- unavailable in this reproduction). "
-            f"Colorbar scaled to data (+/-{vmax:.0f}%), not the paper's +/-30% ENS-relative "
-            "scale -- persistence is a much weaker baseline so skill differences run larger.\n"
+            f"Sequential colorbar {vmin:.0f}%-{vmax:.0f}% (where the data actually lives), "
+            "not a +/-X% diverging scale -- dark red = the rare cells where persistence actually wins.\n"
             "1-degree grid; scales are approximate block sizes, not exact km windows.",
             fontsize=9,
         )
         fig.tight_layout(rect=[0, 0, 0.90, 0.91])
-        cbar = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.02, pad=0.03)
+        cbar = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.02, pad=0.03, extend="both")
         cbar.set_label("% GenCast Mini better than persistence")
         out = args.output_dir / fig_name
-        fig.savefig(out, dpi=150, bbox_inches="tight")
+        fig.savefig(out, dpi=200, bbox_inches="tight")
         plt.close(fig)
         log.info("Wrote %s", out)
 
