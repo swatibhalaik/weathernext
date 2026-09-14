@@ -1,0 +1,26 @@
+Extended Data Figs. 3, 4 and 5 (Brier skill scores and relative economic
+value for extreme surface weather) were NOT produced.
+
+Reason: these figures require a spatially-resolved, multi-year climatology
+(e.g. 'what is the 99.9th percentile of 2m temperature at THIS grid point,
+for THIS time of year, over ~decades of history') to define what counts as
+an 'extreme' event in the first place. The only climatology-like files in
+this data footprint (gencast_data/stats) are the model's own training
+normalization statistics (mean_by_level.nc, stddev_by_level.nc), which are
+aggregated globally per pressure level (and possibly per day-of-year) --
+they do NOT vary by latitude/longitude, so they cannot distinguish 'hot for
+the Sahara' from 'hot for Antarctica'. Producing a Brier score or economic-
+value curve from a single global threshold would not be a meaningful
+reproduction of what the paper does, so this script deliberately does not
+fabricate one.
+
+What would be needed to do this properly: a spatially-resolved ERA5
+climatology (mean and standard deviation, ideally by day-of-year, on the
+same lat/lon grid as the forecast) covering enough years to define stable
+1%, 0.1% and 0.01% tail thresholds -- e.g. the kind of precomputed
+climatology the WeatherBench2 evaluation project publishes. That is a
+genuinely separate data-acquisition step from the single-case GenCast Mini
+demo data used everywhere else in this reproduction, not a code fix.
+
+Everything else on pages 13-20 of the paper (Extended Data Figs. 1, 2, 6,
+7, 8) does not have this dependency and has been produced normally.
